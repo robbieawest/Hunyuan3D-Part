@@ -286,9 +286,27 @@ class PartFormerPipeline(TokenAllocMixin):
             self.conditioner.to(dtype=dtype)
         if device is not None:
             self.device = torch.device(device)
+            # low_vram: record the device, move nothing. The three modules are
+            # used strictly in sequence — conditioner, then DiT, then VAE —
+            # and never together, so __call__ moves each one on around its own
+            # stage and off again. Resident cost becomes the largest single
+            # module (the 6.6GB DiT) instead of the 9.5GB sum, which is the
+            # difference between fitting on a 24GB card and not.
+            if getattr(self, "low_vram", False):
+                return
             self.vae.to(device)
             self.model.to(device)
             self.conditioner.to(device)
+
+    def _stage(self, module, on):
+        """Move one module to the pipeline's device, or back to the CPU.
+
+        A no-op unless low_vram is set, so the ordinary path is untouched."""
+        if not getattr(self, "low_vram", False):
+            return
+        module.to(self.device if on else "cpu")
+        if not on:
+            torch.cuda.empty_cache()
 
     def prepare_extra_step_kwargs(self, generator, eta):
         # prepare extra kwargs for the scheduler step, since not all schedulers have the same signature
@@ -629,6 +647,7 @@ class PartFormerPipeline(TokenAllocMixin):
         )
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
         # 3. condition
+        self._stage(self.conditioner, True)
         cond = self.encode_cond(
             part_surface_inbbox.reshape(batch_size * num_parts, N, dim),
             obj_surface.expand(batch_size * num_parts, -1, -1),
@@ -653,9 +672,12 @@ class PartFormerPipeline(TokenAllocMixin):
             sigmas=sigmas,
         )
 
+        self._stage(self.conditioner, False)
+
         torch.cuda.empty_cache()
 
         # 6. Denoising loop
+        self._stage(self.model, True)
         with synchronize_timer("Diffusion Sampling"):
             for i, t in enumerate(
                 tqdm(timesteps, disable=not enable_pbar, desc="Diffusion Sampling:")
@@ -693,8 +715,11 @@ class PartFormerPipeline(TokenAllocMixin):
                     step_idx = i // getattr(self.scheduler, "order", 1)
                     callback(step_idx, t, outputs)
 
+        self._stage(self.model, False)
+
         # latents2mesh
         # part_latents = torch.split(latents, num_tokens[0].tolist(), dim=1)
+        self._stage(self.vae, True)
         out = trimesh.Scene()
         for i, part_latent in enumerate(latents):
             try:
