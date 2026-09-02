@@ -815,6 +815,7 @@ def mesh_sam(
     threshold=0.95,
     clean_mesh_flag=True,
     seed=42,
+    prompt_bs=64,
 ):
     with Timer("加载mesh"):
         model, model_parallel = model
@@ -883,8 +884,15 @@ def mesh_sam(
         print("采样完成")
 
     with Timer("推理"):
-        bs = 64
-        step_num = prompt_num // bs + 1
+        # get_mask materializes [N, K, 512] float32 on one GPU before the
+        # model is called — 100000 x 64 x 512 x 4B = 12.2GiB at the original
+        # hardcoded 64, plus several intermediates of the same shape inside
+        # the segmentation heads. That does not fit on a 24GB card, so the
+        # batch size is an argument.
+        bs = prompt_bs
+        # ceil, not floor+1: an exact multiple used to append one empty batch,
+        # which reaches get_mask with K = 0.
+        step_num = (prompt_num + bs - 1) // bs
         mask_res = []
         iou_res = []
         for i in tqdm(range(step_num), disable=not show_info):
@@ -1354,6 +1362,7 @@ class AutoMask:
         prompt_num=400,
         threshold=0.95,
         post_process=True,
+        prompt_bs=64,
     ):
         """
         ckpt_path: str, 模型路径
@@ -1372,6 +1381,7 @@ class AutoMask:
         self.prompt_num = prompt_num
         self.threshold = threshold
         self.post_process = post_process
+        self.prompt_bs = prompt_bs
 
     def predict_aabb(
         self,
@@ -1385,6 +1395,7 @@ class AutoMask:
         show_info=True,
         clean_mesh_flag=True,
         seed=42,
+        prompt_bs=None,
     ):
         """
         Parameters:
@@ -1401,6 +1412,7 @@ class AutoMask:
         prompt_num = prompt_num if prompt_num is not None else self.prompt_num
         threshold = threshold if threshold is not None else self.threshold
         post_process = post_process if post_process is not None else self.post_process
+        prompt_bs = prompt_bs if prompt_bs is not None else self.prompt_bs
         return mesh_sam(
             [self.model, self.model_parallel],
             mesh,
@@ -1413,4 +1425,5 @@ class AutoMask:
             save_mid_res=save_mid_res,
             clean_mesh_flag=clean_mesh_flag,
             seed=seed,
+            prompt_bs=prompt_bs,
         )
