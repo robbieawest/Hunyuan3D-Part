@@ -24,7 +24,10 @@ from numba import njit
 from ..models import sonata
 
 #################################
-sys.path.append("../P3-SAM")
+# Relative to this file, not to the cwd: "../P3-SAM" resolved against
+# whatever directory the process happened to start in, so importing the bbox
+# predictor worked from XPart/ and nowhere else.
+sys.path.append(str(Path(__file__).resolve().parents[3] / "P3-SAM"))
 from model import build_P3SAM, load_state_dict
 
 

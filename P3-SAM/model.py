@@ -15,7 +15,21 @@ The model is composed of three parts:
 '''
 def build_P3SAM(self): #build p3sam
     ######################## Sonata ########################
-    self.sonata = sonata.load("sonata", repo_id="facebook/sonata", download_root='/root/sonata')
+    # download_root: upstream hardcoded '/root/sonata', which only a root
+    # user can write. None lets sonata.load use ~/.cache/sonata/ckpt;
+    # SONATA_HOME moves it (a cluster node with a small home quota).
+    #
+    # enable_flash: the checkpoint's own config says true, and PTv3 then
+    # requires flash-attn — an sdist that compiles CUDA kernels for hours.
+    # The SDPA path beside it (model.py:276,293) is already written and needs
+    # nothing installed. sonata.load merges custom_config over ckpt["config"],
+    # which is what upstream's own commented-out line there was reaching for.
+    self.sonata = sonata.load(
+        "sonata",
+        repo_id="facebook/sonata",
+        download_root=os.environ.get("SONATA_HOME"),
+        custom_config={"enable_flash": False},
+    )
     self.mlp = nn.Sequential(
             nn.Linear(1232, 512),
             nn.GELU(),
@@ -122,7 +136,9 @@ def load_state_dict(self,
         # download from huggingface
         print(f'trying to download model from huggingface...')
         from huggingface_hub import hf_hub_download
-        ckpt_path = hf_hub_download(repo_id="tencent/Hunyuan3D-Part", filename="p3sam/p3sam.safetensors", local_dir=os.path.join(os.path.expanduser('~'), '/.cache/p3sam/weights'))
+        # os.path.join(home, '/.cache/...') discards `home` — an absolute
+        # second argument wins — so this wrote to /.cache on the root volume.
+        ckpt_path = hf_hub_download(repo_id="tencent/Hunyuan3D-Part", filename="p3sam/p3sam.safetensors", local_dir=os.path.expanduser('~/.cache/p3sam/weights'))
         print(f'download model from huggingface to: {ckpt_path}')
         from safetensors.torch import load_file
         state_dict = load_file(ckpt_path)
